@@ -48,7 +48,7 @@ export class CapacityService {
 
     const result = await this.reservationRepository
       .createQueryBuilder('r')
-      .select('COALESCE(SUM(r.amountInProgramCurrency::numeric), 0)', 'total')
+      .select('COALESCE(SUM(r."amountInProgramCurrency"::numeric), 0)', 'total')
       .where('r.programId = :programId', { programId })
       .andWhere('r.status = :status', { status: ReservationStatus.ACTIVE })
       .getRawOne();
@@ -108,7 +108,7 @@ export class CapacityService {
       // Calculate current reserved amount
       const result = await reservationRepo
         .createQueryBuilder('r')
-        .select('COALESCE(SUM(r.amountInProgramCurrency::numeric), 0)', 'total')
+        .select('COALESCE(SUM(r."amountInProgramCurrency"::numeric), 0)', 'total')
         .where('r.programId = :programId', { programId })
         .andWhere('r.status = :status', { status: ReservationStatus.ACTIVE })
         .getRawOne();
