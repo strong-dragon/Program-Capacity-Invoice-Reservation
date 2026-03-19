@@ -42,7 +42,7 @@ describe('AppController (e2e)', () => {
         .post('/auth/login')
         .send({ username: 'admin', password: 'admin' })
         .expect(200)
-        .expect((res) => {
+        .expect((res: { body: { access_token: string } }) => {
           expect(res.body.access_token).toBeDefined();
         });
     });
@@ -66,7 +66,9 @@ describe('AppController (e2e)', () => {
     let accessToken: string;
 
     beforeEach(async () => {
-      const response = await request(app.getHttpServer())
+      const response: { body: { access_token: string } } = await request(
+        app.getHttpServer(),
+      )
         .post('/auth/login')
         .send({ username: 'admin', password: 'admin' });
       accessToken = response.body.access_token;

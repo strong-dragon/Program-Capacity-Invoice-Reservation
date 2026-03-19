@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-argument */
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
@@ -163,9 +164,13 @@ describe('CapacityService', () => {
         }),
       };
 
-      dataSource.transaction.mockImplementation(async (cb: any) => {
-        return cb(mockManager);
-      });
+      dataSource.transaction.mockImplementation(
+        async <T>(
+          cb: (manager: typeof mockManager) => Promise<T>,
+        ): Promise<T> => {
+          return cb(mockManager);
+        },
+      );
 
       currencyService.convert.mockResolvedValue('50000.00');
 
@@ -203,9 +208,13 @@ describe('CapacityService', () => {
         }),
       };
 
-      dataSource.transaction.mockImplementation(async (cb: any) => {
-        return cb(mockManager);
-      });
+      dataSource.transaction.mockImplementation(
+        async <T>(
+          cb: (manager: typeof mockManager) => Promise<T>,
+        ): Promise<T> => {
+          return cb(mockManager);
+        },
+      );
 
       currencyService.convert.mockResolvedValue('200.00');
 
@@ -236,9 +245,13 @@ describe('CapacityService', () => {
         })),
       };
 
-      dataSource.transaction.mockImplementation(async (cb: any) => {
-        return cb(mockManager);
-      });
+      dataSource.transaction.mockImplementation(
+        async <T>(
+          cb: (manager: typeof mockManager) => Promise<T>,
+        ): Promise<T> => {
+          return cb(mockManager);
+        },
+      );
 
       const result = await service.reserve(
         'program-1',
@@ -278,9 +291,13 @@ describe('CapacityService', () => {
         })),
       };
 
-      dataSource.transaction.mockImplementation(async (cb: any) => {
-        return cb(mockManager);
-      });
+      dataSource.transaction.mockImplementation(
+        async <T>(
+          cb: (manager: typeof mockManager) => Promise<T>,
+        ): Promise<T> => {
+          return cb(mockManager);
+        },
+      );
 
       const result = await service.release('res-1');
 
@@ -310,9 +327,13 @@ describe('CapacityService', () => {
         })),
       };
 
-      dataSource.transaction.mockImplementation(async (cb: any) => {
-        return cb(mockManager);
-      });
+      dataSource.transaction.mockImplementation(
+        async <T>(
+          cb: (manager: typeof mockManager) => Promise<T>,
+        ): Promise<T> => {
+          return cb(mockManager);
+        },
+      );
 
       const result = await service.release('res-1');
 

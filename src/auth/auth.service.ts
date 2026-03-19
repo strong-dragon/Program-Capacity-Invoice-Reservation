@@ -13,7 +13,7 @@ const MOCK_USERS = [
 export class AuthService {
   constructor(private readonly jwtService: JwtService) {}
 
-  async login(loginDto: LoginDto): Promise<{ access_token: string }> {
+  login(loginDto: LoginDto): { access_token: string } {
     const user = MOCK_USERS.find(
       (u) =>
         u.username === loginDto.username && u.password === loginDto.password,

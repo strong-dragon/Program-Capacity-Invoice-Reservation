@@ -6,10 +6,7 @@ import { Reservation } from '../reservations/entities/reservation.entity';
 import { CurrencyModule } from '../currency/currency.module';
 
 @Module({
-  imports: [
-    TypeOrmModule.forFeature([Program, Reservation]),
-    CurrencyModule,
-  ],
+  imports: [TypeOrmModule.forFeature([Program, Reservation]), CurrencyModule],
   providers: [CapacityService],
   exports: [CapacityService],
 })

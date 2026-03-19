@@ -46,12 +46,16 @@ export class CapacityService {
       throw new ProgramNotFoundException(programId);
     }
 
-    const result = await this.reservationRepository
-      .createQueryBuilder('r')
-      .select('COALESCE(SUM(r."amountInProgramCurrency"::numeric), 0)', 'total')
-      .where('r.programId = :programId', { programId })
-      .andWhere('r.status = :status', { status: ReservationStatus.ACTIVE })
-      .getRawOne();
+    const result: { total: string } | undefined =
+      await this.reservationRepository
+        .createQueryBuilder('r')
+        .select(
+          'COALESCE(SUM(r."amountInProgramCurrency"::numeric), 0)',
+          'total',
+        )
+        .where('r.programId = :programId', { programId })
+        .andWhere('r.status = :status', { status: ReservationStatus.ACTIVE })
+        .getRawOne();
 
     const total = new Decimal(program.totalCapacity);
     const reserved = new Decimal(result?.total ?? '0');
@@ -106,9 +110,12 @@ export class CapacityService {
       );
 
       // Calculate current reserved amount
-      const result = await reservationRepo
+      const result: { total: string } | undefined = await reservationRepo
         .createQueryBuilder('r')
-        .select('COALESCE(SUM(r."amountInProgramCurrency"::numeric), 0)', 'total')
+        .select(
+          'COALESCE(SUM(r."amountInProgramCurrency"::numeric), 0)',
+          'total',
+        )
         .where('r.programId = :programId', { programId })
         .andWhere('r.status = :status', { status: ReservationStatus.ACTIVE })
         .getRawOne();

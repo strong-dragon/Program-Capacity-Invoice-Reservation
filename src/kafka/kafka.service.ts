@@ -102,7 +102,7 @@ export class KafkaService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      const value = JSON.parse(message.value.toString());
+      const value: unknown = JSON.parse(message.value.toString());
 
       switch (topic) {
         case TOPICS.CAPACITY_UPDATE:
@@ -114,10 +114,11 @@ export class KafkaService implements OnModuleInit, OnModuleDestroy {
         default:
           this.logger.warn(`Unknown topic: ${topic}`);
       }
-    } catch (error) {
+    } catch (error: unknown) {
+      const err = error as Error;
       this.logger.error(
-        `Error processing message from ${topic}: ${error.message}`,
-        error.stack,
+        `Error processing message from ${topic}: ${err.message}`,
+        err.stack,
       );
     }
   }
@@ -138,7 +139,9 @@ export class KafkaService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async handleReconciliation(message: ReconciliationMessage) {
-    this.logger.log(`Processing reconciliation for program ${message.programId}`);
+    this.logger.log(
+      `Processing reconciliation for program ${message.programId}`,
+    );
 
     await this.capacityService.reconcile(
       message.programId,
