@@ -1,7 +1,6 @@
-/* eslint-disable @typescript-eslint/no-unsafe-argument */
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, EntityManager, Repository } from 'typeorm';
 import { CapacityService } from './capacity.service';
 import { Program } from '../programs/entities/program.entity';
 import {
@@ -12,12 +11,33 @@ import { CurrencyService } from '../currency/currency.service';
 import { InsufficientCapacityException } from '../common/exceptions/insufficient-capacity.exception';
 import { ProgramNotFoundException } from '../common/exceptions/program-not-found.exception';
 
+/**
+ * Type-safe mock for EntityManager used in transactions
+ */
+interface MockEntityManager {
+  getRepository: jest.Mock;
+}
+
+/**
+ * Creates a type-safe mock for DataSource.transaction
+ * that properly handles the callback signature
+ */
+function createTransactionMock(mockManager: MockEntityManager): jest.Mock {
+  return jest
+    .fn()
+    .mockImplementation(
+      <T>(callback: (manager: EntityManager) => Promise<T>): Promise<T> => {
+        return callback(mockManager as unknown as EntityManager);
+      },
+    );
+}
+
 describe('CapacityService', () => {
   let service: CapacityService;
   let programRepository: jest.Mocked<Repository<Program>>;
   let reservationRepository: jest.Mocked<Repository<Reservation>>;
   let currencyService: jest.Mocked<CurrencyService>;
-  let dataSource: jest.Mocked<DataSource>;
+  let dataSource: { transaction: jest.Mock };
 
   const mockProgram: Program = {
     id: 'program-1',
@@ -31,13 +51,17 @@ describe('CapacityService', () => {
     reservations: [],
   };
 
+  const createMockQueryBuilder = (total = '0') => ({
+    select: jest.fn().mockReturnThis(),
+    where: jest.fn().mockReturnThis(),
+    andWhere: jest.fn().mockReturnThis(),
+    setLock: jest.fn().mockReturnThis(),
+    getOne: jest.fn().mockResolvedValue(null),
+    getRawOne: jest.fn().mockResolvedValue({ total }),
+  });
+
   beforeEach(async () => {
-    const mockQueryBuilder = {
-      select: jest.fn().mockReturnThis(),
-      where: jest.fn().mockReturnThis(),
-      andWhere: jest.fn().mockReturnThis(),
-      getRawOne: jest.fn().mockResolvedValue({ total: '0' }),
-    };
+    const mockQueryBuilder = createMockQueryBuilder();
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -98,14 +122,11 @@ describe('CapacityService', () => {
 
     it('should return correct availability with reservations', async () => {
       programRepository.findOne.mockResolvedValue(mockProgram);
-      const mockQueryBuilder = {
-        select: jest.fn().mockReturnThis(),
-        where: jest.fn().mockReturnThis(),
-        andWhere: jest.fn().mockReturnThis(),
-        getRawOne: jest.fn().mockResolvedValue({ total: '250000.00' }),
-      };
+      const mockQueryBuilder = createMockQueryBuilder('250000.00');
       reservationRepository.createQueryBuilder.mockReturnValue(
-        mockQueryBuilder as any,
+        mockQueryBuilder as unknown as ReturnType<
+          Repository<Reservation>['createQueryBuilder']
+        >,
       );
 
       const result = await service.getAvailability('program-1');
@@ -143,7 +164,7 @@ describe('CapacityService', () => {
         updatedAt: new Date(),
       };
 
-      const mockManager = {
+      const mockManager: MockEntityManager = {
         getRepository: jest.fn((entity) => {
           if (entity === Program) {
             return {
@@ -154,24 +175,12 @@ describe('CapacityService', () => {
             findOne: jest.fn().mockResolvedValue(null),
             create: jest.fn().mockReturnValue(mockReservation),
             save: jest.fn().mockResolvedValue(mockReservation),
-            createQueryBuilder: jest.fn(() => ({
-              select: jest.fn().mockReturnThis(),
-              where: jest.fn().mockReturnThis(),
-              andWhere: jest.fn().mockReturnThis(),
-              getRawOne: jest.fn().mockResolvedValue({ total: '0' }),
-            })),
+            createQueryBuilder: jest.fn(() => createMockQueryBuilder()),
           };
         }),
       };
 
-      dataSource.transaction.mockImplementation(
-        async <T>(
-          cb: (manager: typeof mockManager) => Promise<T>,
-        ): Promise<T> => {
-          return cb(mockManager);
-        },
-      );
-
+      dataSource.transaction = createTransactionMock(mockManager);
       currencyService.convert.mockResolvedValue('50000.00');
 
       const result = await service.reserve(
@@ -186,7 +195,7 @@ describe('CapacityService', () => {
     });
 
     it('should throw InsufficientCapacityException when capacity exceeded', async () => {
-      const mockManager = {
+      const mockManager: MockEntityManager = {
         getRepository: jest.fn((entity) => {
           if (entity === Program) {
             return {
@@ -198,24 +207,12 @@ describe('CapacityService', () => {
           }
           return {
             findOne: jest.fn().mockResolvedValue(null),
-            createQueryBuilder: jest.fn(() => ({
-              select: jest.fn().mockReturnThis(),
-              where: jest.fn().mockReturnThis(),
-              andWhere: jest.fn().mockReturnThis(),
-              getRawOne: jest.fn().mockResolvedValue({ total: '0' }),
-            })),
+            createQueryBuilder: jest.fn(() => createMockQueryBuilder()),
           };
         }),
       };
 
-      dataSource.transaction.mockImplementation(
-        async <T>(
-          cb: (manager: typeof mockManager) => Promise<T>,
-        ): Promise<T> => {
-          return cb(mockManager);
-        },
-      );
-
+      dataSource.transaction = createTransactionMock(mockManager);
       currencyService.convert.mockResolvedValue('200.00');
 
       await expect(
@@ -237,21 +234,26 @@ describe('CapacityService', () => {
         updatedAt: new Date(),
       };
 
-      programRepository.findOne.mockResolvedValue(mockProgram);
-
-      const mockManager = {
-        getRepository: jest.fn(() => ({
-          findOne: jest.fn().mockResolvedValue(existingReservation),
-        })),
+      const mockQueryBuilderWithExisting = {
+        ...createMockQueryBuilder(),
+        getOne: jest.fn().mockResolvedValue(existingReservation),
       };
 
-      dataSource.transaction.mockImplementation(
-        async <T>(
-          cb: (manager: typeof mockManager) => Promise<T>,
-        ): Promise<T> => {
-          return cb(mockManager);
-        },
-      );
+      const mockManager: MockEntityManager = {
+        getRepository: jest.fn((entity) => {
+          if (entity === Program) {
+            return {
+              findOne: jest.fn().mockResolvedValue(mockProgram),
+            };
+          }
+          return {
+            findOne: jest.fn().mockResolvedValue(mockProgram),
+            createQueryBuilder: jest.fn(() => mockQueryBuilderWithExisting),
+          };
+        }),
+      };
+
+      dataSource.transaction = createTransactionMock(mockManager);
 
       const result = await service.reserve(
         'program-1',
@@ -279,25 +281,25 @@ describe('CapacityService', () => {
         updatedAt: new Date(),
       };
 
-      programRepository.findOne.mockResolvedValue(mockProgram);
-
-      const mockManager = {
-        getRepository: jest.fn(() => ({
-          findOne: jest.fn().mockResolvedValue(mockReservation),
-          save: jest.fn().mockResolvedValue({
-            ...mockReservation,
-            status: ReservationStatus.RELEASED,
-          }),
-        })),
+      const mockManager: MockEntityManager = {
+        getRepository: jest.fn((entity) => {
+          if (entity === Program) {
+            return {
+              findOne: jest.fn().mockResolvedValue(mockProgram),
+            };
+          }
+          return {
+            findOne: jest.fn().mockResolvedValue(mockReservation),
+            save: jest.fn().mockResolvedValue({
+              ...mockReservation,
+              status: ReservationStatus.RELEASED,
+            }),
+            createQueryBuilder: jest.fn(() => createMockQueryBuilder()),
+          };
+        }),
       };
 
-      dataSource.transaction.mockImplementation(
-        async <T>(
-          cb: (manager: typeof mockManager) => Promise<T>,
-        ): Promise<T> => {
-          return cb(mockManager);
-        },
-      );
+      dataSource.transaction = createTransactionMock(mockManager);
 
       const result = await service.release('res-1');
 
@@ -319,21 +321,21 @@ describe('CapacityService', () => {
         updatedAt: new Date(),
       };
 
-      programRepository.findOne.mockResolvedValue(mockProgram);
-
-      const mockManager = {
-        getRepository: jest.fn(() => ({
-          findOne: jest.fn().mockResolvedValue(releasedReservation),
-        })),
+      const mockManager: MockEntityManager = {
+        getRepository: jest.fn((entity) => {
+          if (entity === Program) {
+            return {
+              findOne: jest.fn().mockResolvedValue(mockProgram),
+            };
+          }
+          return {
+            findOne: jest.fn().mockResolvedValue(releasedReservation),
+            createQueryBuilder: jest.fn(() => createMockQueryBuilder()),
+          };
+        }),
       };
 
-      dataSource.transaction.mockImplementation(
-        async <T>(
-          cb: (manager: typeof mockManager) => Promise<T>,
-        ): Promise<T> => {
-          return cb(mockManager);
-        },
-      );
+      dataSource.transaction = createTransactionMock(mockManager);
 
       const result = await service.release('res-1');
 

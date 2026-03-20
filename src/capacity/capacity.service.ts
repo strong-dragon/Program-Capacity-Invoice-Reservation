@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import { Repository, DataSource, EntityManager } from 'typeorm';
 import Decimal from 'decimal.js';
 import { Program } from '../programs/entities/program.entity';
 import {
@@ -10,6 +10,7 @@ import {
 import { CurrencyService } from '../currency/currency.service';
 import { InsufficientCapacityException } from '../common/exceptions/insufficient-capacity.exception';
 import { ProgramNotFoundException } from '../common/exceptions/program-not-found.exception';
+import { ReservationNotFoundException } from '../common/exceptions/reservation-not-found.exception';
 
 export interface AvailabilityDto {
   programId: string;
@@ -69,6 +70,43 @@ export class CapacityService {
     };
   }
 
+  /**
+   * Get availability within a transaction context
+   */
+  private async getAvailabilityWithManager(
+    programId: string,
+    manager: EntityManager,
+  ): Promise<AvailabilityDto> {
+    const programRepo = manager.getRepository(Program);
+    const reservationRepo = manager.getRepository(Reservation);
+
+    const program = await programRepo.findOne({
+      where: { id: programId },
+    });
+
+    if (!program) {
+      throw new ProgramNotFoundException(programId);
+    }
+
+    const result: { total: string } | undefined = await reservationRepo
+      .createQueryBuilder('r')
+      .select('COALESCE(SUM(r."amountInProgramCurrency"::numeric), 0)', 'total')
+      .where('r.programId = :programId', { programId })
+      .andWhere('r.status = :status', { status: ReservationStatus.ACTIVE })
+      .getRawOne();
+
+    const total = new Decimal(program.totalCapacity);
+    const reserved = new Decimal(result?.total ?? '0');
+
+    return {
+      programId,
+      currency: program.currency,
+      totalCapacity: total.toFixed(2),
+      reservedAmount: reserved.toFixed(2),
+      availableAmount: total.minus(reserved).toFixed(2),
+    };
+  }
+
   async reserve(
     programId: string,
     invoiceId: string,
@@ -79,20 +117,7 @@ export class CapacityService {
       const programRepo = manager.getRepository(Program);
       const reservationRepo = manager.getRepository(Reservation);
 
-      // Check for existing reservation (idempotency)
-      const existing = await reservationRepo.findOne({
-        where: { invoiceId },
-      });
-
-      if (existing) {
-        this.logger.log(
-          `Reservation already exists for invoice ${invoiceId}, returning existing`,
-        );
-        const availability = await this.getAvailability(programId);
-        return { reservation: existing, availability };
-      }
-
-      // Get program with lock
+      // Get program with lock FIRST to prevent race conditions
       const program = await programRepo.findOne({
         where: { id: programId },
         lock: { mode: 'pessimistic_write' },
@@ -100,6 +125,25 @@ export class CapacityService {
 
       if (!program) {
         throw new ProgramNotFoundException(programId);
+      }
+
+      // Check for existing reservation AFTER acquiring lock (idempotency)
+      // Using SELECT FOR UPDATE to prevent concurrent duplicates
+      const existing = await reservationRepo
+        .createQueryBuilder('r')
+        .setLock('pessimistic_write')
+        .where('r.invoiceId = :invoiceId', { invoiceId })
+        .getOne();
+
+      if (existing) {
+        this.logger.log(
+          `Reservation already exists for invoice ${invoiceId}, returning existing`,
+        );
+        const availability = await this.getAvailabilityWithManager(
+          programId,
+          manager,
+        );
+        return { reservation: existing, availability };
       }
 
       // Convert amount to program currency
@@ -173,9 +217,7 @@ export class CapacityService {
       });
 
       if (!reservation) {
-        throw new ProgramNotFoundException(
-          `Reservation ${reservationId} not found`,
-        );
+        throw new ReservationNotFoundException(reservationId);
       }
 
       // Idempotent: if already released, just return current availability
@@ -183,7 +225,7 @@ export class CapacityService {
         this.logger.log(
           `Reservation ${reservationId} already released, returning current availability`,
         );
-        return this.getAvailability(reservation.programId);
+        return this.getAvailabilityWithManager(reservation.programId, manager);
       }
 
       reservation.status = ReservationStatus.RELEASED;
@@ -193,7 +235,7 @@ export class CapacityService {
         `Released reservation ${reservationId} for invoice ${reservation.invoiceId}`,
       );
 
-      return this.getAvailability(reservation.programId);
+      return this.getAvailabilityWithManager(reservation.programId, manager);
     });
   }
 
@@ -201,22 +243,28 @@ export class CapacityService {
     programId: string,
     newCapacity: string,
   ): Promise<Program> {
-    const program = await this.programRepository.findOne({
-      where: { id: programId },
+    return this.dataSource.transaction(async (manager) => {
+      const programRepo = manager.getRepository(Program);
+
+      // Acquire lock to prevent race conditions with concurrent reservations
+      const program = await programRepo.findOne({
+        where: { id: programId },
+        lock: { mode: 'pessimistic_write' },
+      });
+
+      if (!program) {
+        throw new ProgramNotFoundException(programId);
+      }
+
+      program.totalCapacity = newCapacity;
+      await programRepo.save(program);
+
+      this.logger.log(
+        `Updated program ${programId} capacity to ${newCapacity} ${program.currency}`,
+      );
+
+      return program;
     });
-
-    if (!program) {
-      throw new ProgramNotFoundException(programId);
-    }
-
-    program.totalCapacity = newCapacity;
-    await this.programRepository.save(program);
-
-    this.logger.log(
-      `Updated program ${programId} capacity to ${newCapacity} ${program.currency}`,
-    );
-
-    return program;
   }
 
   async reconcile(
