@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException, Logger } from '@nestjs/common';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
@@ -12,63 +12,61 @@ interface User {
 
 @Injectable()
 export class AuthService {
-  private readonly logger = new Logger(AuthService.name);
-  private readonly users: User[] = [];
+  private readonly users: User[];
 
   constructor(
     private readonly jwtService: JwtService,
-    private readonly configService: ConfigService,
+    configService: ConfigService,
   ) {
-    this.initializeDemoUsers();
-  }
-
-  private initializeDemoUsers(): void {
-    const nodeEnv = this.configService.get<string>('nodeEnv') ?? 'development';
-
-    if (nodeEnv === 'production') {
-      this.logger.warn(
-        'No demo users in production. Configure a proper user store.',
-      );
-      return;
+    const envUsers = configService.get<string>('auth.users');
+    if (envUsers) {
+      try {
+        const parsed = JSON.parse(envUsers) as Array<{
+          id: string;
+          username: string;
+          passwordHash: string;
+        }>;
+        this.users = parsed.map((u) => {
+          if (!u.id || !u.username || !u.passwordHash) {
+            throw new Error(
+              'Each user must have id, username, and passwordHash',
+            );
+          }
+          return {
+            id: u.id,
+            username: u.username,
+            passwordHash: u.passwordHash,
+          };
+        });
+      } catch (e) {
+        throw new Error(`Invalid AUTH_USERS format: ${(e as Error).message}`);
+      }
+    } else if (configService.get<string>('nodeEnv') !== 'production') {
+      this.users = [
+        { id: '1', username: 'admin', password: 'admin' },
+        { id: '2', username: 'user', password: 'user' },
+      ].map((u) => ({
+        id: u.id,
+        username: u.username,
+        passwordHash: bcrypt.hashSync(u.password, 10),
+      }));
+    } else {
+      throw new Error('AUTH_USERS must be configured in production');
     }
-
-    const demoUsers = [
-      { id: '1', username: 'admin', password: 'admin' },
-      { id: '2', username: 'user', password: 'user' },
-    ];
-
-    for (const user of demoUsers) {
-      const passwordHash = bcrypt.hashSync(user.password, 10);
-      this.users.push({
-        id: user.id,
-        username: user.username,
-        passwordHash,
-      });
-    }
-
-    this.logger.log('Demo users initialized for development environment');
   }
 
   login(loginDto: LoginDto): { access_token: string } {
     const user = this.users.find((u) => u.username === loginDto.username);
 
-    if (!user) {
+    if (!user || !bcrypt.compareSync(loginDto.password, user.passwordHash)) {
       throw new UnauthorizedException('Invalid credentials');
     }
-
-    const isPasswordValid = bcrypt.compareSync(
-      loginDto.password,
-      user.passwordHash,
-    );
-
-    if (!isPasswordValid) {
-      throw new UnauthorizedException('Invalid credentials');
-    }
-
-    const payload = { sub: user.id, username: user.username };
 
     return {
-      access_token: this.jwtService.sign(payload),
+      access_token: this.jwtService.sign({
+        sub: user.id,
+        username: user.username,
+      }),
     };
   }
 }

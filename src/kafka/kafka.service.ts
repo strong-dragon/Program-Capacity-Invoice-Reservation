@@ -17,15 +17,11 @@ const TOPICS = {
   RECONCILIATION: 'capacity.reconciliation',
 } as const;
 
-const MAX_RETRIES = 3;
-
 @Injectable()
 export class KafkaService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(KafkaService.name);
-  private kafka: Kafka;
   private consumer: Consumer;
   private isConnected = false;
-  private retryCount = new Map<string, number>();
 
   constructor(
     private readonly configService: ConfigService,
@@ -37,38 +33,14 @@ export class KafkaService implements OnModuleInit, OnModuleDestroy {
     const groupId =
       this.configService.get<string>('kafka.groupId') ?? 'capacity-service';
 
-    this.kafka = new Kafka({
-      clientId: 'capacity-service',
-      brokers,
-      retry: {
-        initialRetryTime: 300,
-        retries: 10,
-      },
-    });
-
-    this.consumer = this.kafka.consumer({ groupId });
+    const kafka = new Kafka({ clientId: 'capacity-service', brokers });
+    this.consumer = kafka.consumer({ groupId });
   }
 
   async onModuleInit() {
     try {
-      await this.connect();
-    } catch (error) {
-      this.logger.warn(
-        'Failed to connect to Kafka. Service will continue without Kafka.',
-        error,
-      );
-    }
-  }
-
-  async onModuleDestroy() {
-    await this.disconnect();
-  }
-
-  private async connect() {
-    try {
       await this.consumer.connect();
       this.isConnected = true;
-      this.logger.log('Connected to Kafka');
 
       await this.consumer.subscribe({
         topics: [TOPICS.CAPACITY_UPDATE, TOPICS.RECONCILIATION],
@@ -76,140 +48,63 @@ export class KafkaService implements OnModuleInit, OnModuleDestroy {
       });
 
       await this.consumer.run({
-        eachMessage: async (payload: EachMessagePayload) => {
-          await this.handleMessage(payload);
-        },
+        eachMessage: (payload) => this.handleMessage(payload),
       });
 
-      this.logger.log(
-        `Subscribed to topics: ${Object.values(TOPICS).join(', ')}`,
-      );
-    } catch (error) {
-      this.isConnected = false;
-      throw error;
+      this.logger.log('Kafka connected');
+    } catch {
+      this.logger.warn('Kafka unavailable, continuing without it');
     }
   }
 
-  private async disconnect() {
+  async onModuleDestroy() {
     if (this.isConnected) {
       await this.consumer.disconnect();
-      this.isConnected = false;
-      this.logger.log('Disconnected from Kafka');
     }
   }
 
-  private getMessageKey(payload: EachMessagePayload): string {
-    return `${payload.topic}-${payload.partition}-${payload.message.offset}`;
-  }
-
-  private async handleMessage(payload: EachMessagePayload) {
-    const { topic, message } = payload;
-    const messageKey = this.getMessageKey(payload);
-
-    if (!message.value) {
-      this.logger.warn(`Received empty message on topic ${topic}`);
-      return;
-    }
+  private async handleMessage({ topic, message }: EachMessagePayload) {
+    if (!message.value) return;
 
     try {
-      const rawValue: unknown = JSON.parse(message.value.toString());
+      const raw: unknown = JSON.parse(message.value.toString());
 
-      switch (topic) {
-        case TOPICS.CAPACITY_UPDATE:
-          await this.processCapacityUpdate(rawValue);
-          break;
-        case TOPICS.RECONCILIATION:
-          await this.processReconciliation(rawValue);
-          break;
-        default:
-          this.logger.warn(`Unknown topic: ${topic}`);
-      }
-
-      // Clear retry count on success
-      this.retryCount.delete(messageKey);
-    } catch (error: unknown) {
-      const err = error as Error;
-      const currentRetries = this.retryCount.get(messageKey) ?? 0;
-
-      if (currentRetries < MAX_RETRIES) {
-        this.retryCount.set(messageKey, currentRetries + 1);
-        this.logger.warn(
-          `Retrying message (${currentRetries + 1}/${MAX_RETRIES}): ${err.message}`,
+      if (topic === TOPICS.CAPACITY_UPDATE) {
+        const msg = await this.validateMessage(CapacityUpdateMessage, raw);
+        await this.capacityService.updateProgramCapacity(
+          msg.programId,
+          msg.newTotalCapacity,
         );
-        throw error; // Rethrow to trigger Kafka retry
-      } else {
-        // Max retries exceeded - send to DLQ (log for now)
-        this.logger.error(
-          `Message failed after ${MAX_RETRIES} retries, sending to DLQ`,
-          {
-            topic,
-            partition: payload.partition,
-            offset: message.offset,
-            error: err.message,
-          },
+      } else if (topic === TOPICS.RECONCILIATION) {
+        const msg = await this.validateMessage(ReconciliationMessage, raw);
+        await this.capacityService.reconcile(
+          msg.programId,
+          msg.totalCapacity,
+          msg.reservations,
         );
-        // In production: publish to dead-letter topic
-        this.retryCount.delete(messageKey);
       }
+    } catch (error) {
+      this.logger.error(
+        `Message processing failed on topic ${topic}: ${(error as Error).message}`,
+        { topic, value: message.value?.toString().slice(0, 500) },
+      );
     }
   }
 
-  private async processCapacityUpdate(rawValue: unknown): Promise<void> {
-    const message = plainToInstance(CapacityUpdateMessage, rawValue);
-    const errors = await validate(message);
+  private async validateMessage<T extends object>(
+    cls: new () => T,
+    raw: unknown,
+  ): Promise<T> {
+    const instance = plainToInstance(cls, raw);
+    const errors = await validate(instance);
 
     if (errors.length > 0) {
-      const errorMessages = errors
+      const msgs = errors
         .map((e) => Object.values(e.constraints ?? {}).join(', '))
         .join('; ');
-      throw new Error(`Invalid CapacityUpdateMessage: ${errorMessages}`);
+      throw new Error(`Validation failed: ${msgs}`);
     }
 
-    await this.handleCapacityUpdate(message);
-  }
-
-  private async processReconciliation(rawValue: unknown): Promise<void> {
-    const message = plainToInstance(ReconciliationMessage, rawValue);
-    const errors = await validate(message);
-
-    if (errors.length > 0) {
-      const errorMessages = errors
-        .map((e) => Object.values(e.constraints ?? {}).join(', '))
-        .join('; ');
-      throw new Error(`Invalid ReconciliationMessage: ${errorMessages}`);
-    }
-
-    await this.handleReconciliation(message);
-  }
-
-  private async handleCapacityUpdate(message: CapacityUpdateMessage) {
-    this.logger.log(
-      `Processing capacity update for program ${message.programId}`,
-    );
-
-    await this.capacityService.updateProgramCapacity(
-      message.programId,
-      message.newTotalCapacity,
-    );
-
-    this.logger.log(
-      `Updated capacity for program ${message.programId} to ${message.newTotalCapacity} ${message.currency}`,
-    );
-  }
-
-  private async handleReconciliation(message: ReconciliationMessage) {
-    this.logger.log(
-      `Processing reconciliation for program ${message.programId}`,
-    );
-
-    await this.capacityService.reconcile(
-      message.programId,
-      message.totalCapacity,
-      message.reservations,
-    );
-
-    this.logger.log(
-      `Reconciled program ${message.programId}: capacity=${message.totalCapacity}, reservations=${message.reservations.length}`,
-    );
+    return instance;
   }
 }

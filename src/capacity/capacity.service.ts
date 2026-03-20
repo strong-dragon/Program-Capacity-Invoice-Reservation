@@ -39,62 +39,26 @@ export class CapacityService {
     private readonly dataSource: DataSource,
   ) {}
 
-  async getAvailability(programId: string): Promise<AvailabilityDto> {
-    const program = await this.programRepository.findOne({
-      where: { id: programId },
-    });
-
-    if (!program) {
-      throw new ProgramNotFoundException(programId);
-    }
-
-    const result: { total: string } | undefined =
-      await this.reservationRepository
-        .createQueryBuilder('r')
-        .select(
-          'COALESCE(SUM(r."amountInProgramCurrency"::numeric), 0)',
-          'total',
-        )
-        .where('r.programId = :programId', { programId })
-        .andWhere('r.status = :status', { status: ReservationStatus.ACTIVE })
-        .getRawOne();
-
-    const total = new Decimal(program.totalCapacity);
-    const reserved = new Decimal(result?.total ?? '0');
-
-    return {
-      programId,
-      currency: program.currency,
-      totalCapacity: total.toFixed(2),
-      reservedAmount: reserved.toFixed(2),
-      availableAmount: total.minus(reserved).toFixed(2),
-    };
-  }
-
-  /**
-   * Get availability within a transaction context
-   */
-  private async getAvailabilityWithManager(
+  async getAvailability(
     programId: string,
-    manager: EntityManager,
+    manager?: EntityManager,
   ): Promise<AvailabilityDto> {
-    const programRepo = manager.getRepository(Program);
-    const reservationRepo = manager.getRepository(Reservation);
+    const programRepo = manager
+      ? manager.getRepository(Program)
+      : this.programRepository;
+    const reservationRepo = manager
+      ? manager.getRepository(Reservation)
+      : this.reservationRepository;
 
-    const program = await programRepo.findOne({
-      where: { id: programId },
-    });
+    const program = await programRepo.findOne({ where: { id: programId } });
+    if (!program) throw new ProgramNotFoundException(programId);
 
-    if (!program) {
-      throw new ProgramNotFoundException(programId);
-    }
-
-    const result: { total: string } | undefined = await reservationRepo
+    const result = await reservationRepo
       .createQueryBuilder('r')
       .select('COALESCE(SUM(r."amountInProgramCurrency"::numeric), 0)', 'total')
       .where('r.programId = :programId', { programId })
       .andWhere('r.status = :status', { status: ReservationStatus.ACTIVE })
-      .getRawOne();
+      .getRawOne<{ total: string }>();
 
     const total = new Decimal(program.totalCapacity);
     const reserved = new Decimal(result?.total ?? '0');
@@ -118,23 +82,14 @@ export class CapacityService {
       const programRepo = manager.getRepository(Program);
       const reservationRepo = manager.getRepository(Reservation);
 
-      // Get program with lock FIRST to prevent race conditions
       const program = await programRepo.findOne({
         where: { id: programId },
         lock: { mode: 'pessimistic_write' },
       });
 
-      if (!program) {
-        throw new ProgramNotFoundException(programId);
-      }
+      if (!program) throw new ProgramNotFoundException(programId);
+      if (!program.isActive) throw new ProgramInactiveException(programId);
 
-      // Check if program is active
-      if (!program.isActive) {
-        throw new ProgramInactiveException(programId);
-      }
-
-      // Check for existing reservation AFTER acquiring lock (idempotency)
-      // Using SELECT FOR UPDATE to prevent concurrent duplicates
       const existing = await reservationRepo
         .createQueryBuilder('r')
         .setLock('pessimistic_write')
@@ -142,26 +97,21 @@ export class CapacityService {
         .getOne();
 
       if (existing) {
-        this.logger.log(
-          `Reservation already exists for invoice ${invoiceId}, returning existing`,
-        );
-        // Use existing reservation's programId for correct availability
-        const availability = await this.getAvailabilityWithManager(
+        this.logger.log(`Reservation exists for invoice ${invoiceId}`);
+        const availability = await this.getAvailability(
           existing.programId,
           manager,
         );
         return { reservation: existing, availability };
       }
 
-      // Convert amount to program currency
       const amountInProgramCurrency = await this.currencyService.convert(
         amount,
         currency,
         program.currency,
       );
 
-      // Calculate current reserved amount
-      const result: { total: string } | undefined = await reservationRepo
+      const result = await reservationRepo
         .createQueryBuilder('r')
         .select(
           'COALESCE(SUM(r."amountInProgramCurrency"::numeric), 0)',
@@ -169,14 +119,13 @@ export class CapacityService {
         )
         .where('r.programId = :programId', { programId })
         .andWhere('r.status = :status', { status: ReservationStatus.ACTIVE })
-        .getRawOne();
+        .getRawOne<{ total: string }>();
 
       const totalCapacity = new Decimal(program.totalCapacity);
       const currentReserved = new Decimal(result?.total ?? '0');
       const requestedAmount = new Decimal(amountInProgramCurrency);
       const availableCapacity = totalCapacity.minus(currentReserved);
 
-      // Check capacity
       if (requestedAmount.greaterThan(availableCapacity)) {
         throw new InsufficientCapacityException(
           programId,
@@ -186,7 +135,6 @@ export class CapacityService {
         );
       }
 
-      // Create reservation
       const reservation = reservationRepo.create({
         invoiceId,
         amount,
@@ -196,21 +144,43 @@ export class CapacityService {
         status: ReservationStatus.ACTIVE,
       });
 
-      await reservationRepo.save(reservation);
+      try {
+        await reservationRepo.save(reservation);
+      } catch (error) {
+        if ((error as { code?: string }).code === '23505') {
+          this.logger.warn(
+            `Concurrent duplicate for invoice ${invoiceId}, returning existing`,
+          );
+          const existingReservation = await reservationRepo.findOne({
+            where: { invoiceId },
+          });
+          if (existingReservation) {
+            return {
+              reservation: existingReservation,
+              availability: await this.getAvailability(
+                existingReservation.programId,
+                manager,
+              ),
+            };
+          }
+        }
+        throw error;
+      }
 
       this.logger.log(
-        `Created reservation ${reservation.id} for invoice ${invoiceId}: ${amount} ${currency} (${amountInProgramCurrency} ${program.currency})`,
+        `Created reservation ${reservation.id}: ${amount} ${currency}`,
       );
 
-      const availability: AvailabilityDto = {
-        programId,
-        currency: program.currency,
-        totalCapacity: totalCapacity.toFixed(2),
-        reservedAmount: currentReserved.plus(requestedAmount).toFixed(2),
-        availableAmount: availableCapacity.minus(requestedAmount).toFixed(2),
+      return {
+        reservation,
+        availability: {
+          programId,
+          currency: program.currency,
+          totalCapacity: totalCapacity.toFixed(2),
+          reservedAmount: currentReserved.plus(requestedAmount).toFixed(2),
+          availableAmount: availableCapacity.minus(requestedAmount).toFixed(2),
+        },
       };
-
-      return { reservation, availability };
     });
   }
 
@@ -223,26 +193,18 @@ export class CapacityService {
         lock: { mode: 'pessimistic_write' },
       });
 
-      if (!reservation) {
-        throw new ReservationNotFoundException(reservationId);
-      }
+      if (!reservation) throw new ReservationNotFoundException(reservationId);
 
-      // Idempotent: if already released, just return current availability
       if (reservation.status === ReservationStatus.RELEASED) {
-        this.logger.log(
-          `Reservation ${reservationId} already released, returning current availability`,
-        );
-        return this.getAvailabilityWithManager(reservation.programId, manager);
+        return this.getAvailability(reservation.programId, manager);
       }
 
       reservation.status = ReservationStatus.RELEASED;
       await reservationRepo.save(reservation);
 
-      this.logger.log(
-        `Released reservation ${reservationId} for invoice ${reservation.invoiceId}`,
-      );
+      this.logger.log(`Released reservation ${reservationId}`);
 
-      return this.getAvailabilityWithManager(reservation.programId, manager);
+      return this.getAvailability(reservation.programId, manager);
     });
   }
 
@@ -253,21 +215,18 @@ export class CapacityService {
     return this.dataSource.transaction(async (manager) => {
       const programRepo = manager.getRepository(Program);
 
-      // Acquire lock to prevent race conditions with concurrent reservations
       const program = await programRepo.findOne({
         where: { id: programId },
         lock: { mode: 'pessimistic_write' },
       });
 
-      if (!program) {
-        throw new ProgramNotFoundException(programId);
-      }
+      if (!program) throw new ProgramNotFoundException(programId);
 
       program.totalCapacity = newCapacity;
       await programRepo.save(program);
 
       this.logger.log(
-        `Updated program ${programId} capacity to ${newCapacity} ${program.currency}`,
+        `Updated program ${programId} capacity to ${newCapacity}`,
       );
 
       return program;
@@ -284,76 +243,63 @@ export class CapacityService {
       status: 'active' | 'released';
     }>,
   ): Promise<void> {
-    this.logger.log(
-      `Starting reconciliation for program ${programId} with ${reservations.length} reservations`,
-    );
+    this.logger.log(`Reconciling program ${programId}`);
 
-    try {
-      await this.dataSource.transaction(async (manager) => {
-        const programRepo = manager.getRepository(Program);
-        const reservationRepo = manager.getRepository(Reservation);
+    await this.dataSource.transaction(async (manager) => {
+      const programRepo = manager.getRepository(Program);
+      const reservationRepo = manager.getRepository(Reservation);
 
-        const program = await programRepo.findOne({
-          where: { id: programId },
-          lock: { mode: 'pessimistic_write' },
-        });
+      const program = await programRepo.findOne({
+        where: { id: programId },
+        lock: { mode: 'pessimistic_write' },
+      });
 
-        if (!program) {
-          throw new ProgramNotFoundException(programId);
-        }
+      if (!program) throw new ProgramNotFoundException(programId);
 
-        // Store old values for logging
-        const oldCapacity = program.totalCapacity;
+      program.totalCapacity = totalCapacity;
+      await programRepo.save(program);
 
-        // Update program capacity
-        program.totalCapacity = totalCapacity;
-        await programRepo.save(program);
+      const incomingInvoiceIds = reservations.map((r) => r.invoiceId);
 
-        // Delete existing reservations for this program
-        const deleteResult = await reservationRepo.delete({ programId });
-        this.logger.log(
-          `Deleted ${deleteResult.affected ?? 0} existing reservations for program ${programId}`,
+      for (const res of reservations) {
+        const amountInProgramCurrency = await this.currencyService.convert(
+          res.amount,
+          res.currency,
+          program.currency,
         );
 
-        // Pre-convert all currencies before inserting to fail early if any conversion fails
-        const convertedReservations = await Promise.all(
-          reservations.map(async (res) => ({
-            ...res,
-            amountInProgramCurrency: await this.currencyService.convert(
-              res.amount,
-              res.currency,
-              program.currency,
-            ),
-          })),
-        );
-
-        // Insert new reservations
-        for (const res of convertedReservations) {
-          const reservation = reservationRepo.create({
+        await reservationRepo.upsert(
+          {
             invoiceId: res.invoiceId,
             amount: res.amount,
             currency: res.currency,
-            amountInProgramCurrency: res.amountInProgramCurrency,
+            amountInProgramCurrency,
             programId,
             status:
               res.status === 'active'
                 ? ReservationStatus.ACTIVE
                 : ReservationStatus.RELEASED,
-          });
-
-          await reservationRepo.save(reservation);
-        }
-
-        this.logger.log(
-          `Reconciliation complete: capacity ${oldCapacity} -> ${totalCapacity}, inserted ${reservations.length} reservations`,
+          },
+          ['invoiceId'],
         );
-      });
-    } catch (error) {
-      this.logger.error(
-        `Reconciliation failed for program ${programId}, transaction rolled back`,
-        error instanceof Error ? error.stack : String(error),
+      }
+
+      if (incomingInvoiceIds.length > 0) {
+        await reservationRepo
+          .createQueryBuilder()
+          .delete()
+          .where('programId = :programId', { programId })
+          .andWhere('invoiceId NOT IN (:...invoiceIds)', {
+            invoiceIds: incomingInvoiceIds,
+          })
+          .execute();
+      } else {
+        await reservationRepo.delete({ programId });
+      }
+
+      this.logger.log(
+        `Reconciled: capacity=${totalCapacity}, reservations=${reservations.length}`,
       );
-      throw error;
-    }
+    });
   }
 }

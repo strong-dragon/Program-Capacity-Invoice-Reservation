@@ -11,17 +11,10 @@ import { CurrencyService } from '../currency/currency.service';
 import { InsufficientCapacityException } from '../common/exceptions/insufficient-capacity.exception';
 import { ProgramNotFoundException } from '../common/exceptions/program-not-found.exception';
 
-/**
- * Type-safe mock for EntityManager used in transactions
- */
 interface MockEntityManager {
   getRepository: jest.Mock;
 }
 
-/**
- * Creates a type-safe mock for DataSource.transaction
- * that properly handles the callback signature
- */
 function createTransactionMock(mockManager: MockEntityManager): jest.Mock {
   return jest
     .fn()

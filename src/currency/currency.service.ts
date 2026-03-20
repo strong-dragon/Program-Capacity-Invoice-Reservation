@@ -16,45 +16,32 @@ export class CurrencyService {
     fromCurrency: string,
     toCurrency: string,
   ): Promise<string> {
-    if (fromCurrency === toCurrency) {
-      return amount;
-    }
+    if (fromCurrency === toCurrency) return amount;
 
     const rate = await this.getRate(fromCurrency, toCurrency);
-    const result = new Decimal(amount).times(rate);
-
-    return result.toFixed(2);
+    return new Decimal(amount).times(rate).toFixed(2);
   }
 
   async getRate(fromCurrency: string, toCurrency: string): Promise<string> {
-    if (fromCurrency === toCurrency) {
-      return '1';
-    }
+    if (fromCurrency === toCurrency) return '1';
 
-    const exchangeRate = await this.exchangeRateRepository.findOne({
+    const direct = await this.exchangeRateRepository.findOne({
       where: { fromCurrency, toCurrency },
     });
+    if (direct) return direct.rate;
 
-    if (exchangeRate) {
-      return exchangeRate.rate;
-    }
-
-    // Try reverse rate
-    const reverseRate = await this.exchangeRateRepository.findOne({
+    const reverse = await this.exchangeRateRepository.findOne({
       where: { fromCurrency: toCurrency, toCurrency: fromCurrency },
     });
-
-    if (reverseRate) {
-      return new Decimal(1).dividedBy(reverseRate.rate).toFixed(6);
-    }
+    if (reverse) return new Decimal(1).dividedBy(reverse.rate).toFixed(6);
 
     throw new NotFoundException(
-      `Exchange rate not found for ${fromCurrency} to ${toCurrency}`,
+      `Exchange rate not found: ${fromCurrency} -> ${toCurrency}`,
     );
   }
 
   async seedDefaultRates(): Promise<void> {
-    const defaultRates = [
+    const rates = [
       { fromCurrency: 'USD', toCurrency: 'EUR', rate: '0.92' },
       { fromCurrency: 'USD', toCurrency: 'GBP', rate: '0.79' },
       { fromCurrency: 'USD', toCurrency: 'UAH', rate: '41.50' },
@@ -62,17 +49,11 @@ export class CurrencyService {
       { fromCurrency: 'EUR', toCurrency: 'UAH', rate: '45.10' },
     ];
 
-    for (const rate of defaultRates) {
-      const existing = await this.exchangeRateRepository.findOne({
-        where: {
-          fromCurrency: rate.fromCurrency,
-          toCurrency: rate.toCurrency,
-        },
+    for (const rate of rates) {
+      const exists = await this.exchangeRateRepository.findOne({
+        where: { fromCurrency: rate.fromCurrency, toCurrency: rate.toCurrency },
       });
-
-      if (!existing) {
-        await this.exchangeRateRepository.save(rate);
-      }
+      if (!exists) await this.exchangeRateRepository.save(rate);
     }
   }
 }
