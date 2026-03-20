@@ -85,8 +85,7 @@ export class KafkaService implements OnModuleInit, OnModuleDestroy {
       }
     } catch (error) {
       this.logger.error(
-        `Message processing failed on topic ${topic}: ${(error as Error).message}`,
-        { topic, value: message.value?.toString().slice(0, 500) },
+        `Failed to process ${topic}: ${(error as Error).message}`,
       );
     }
   }
@@ -102,7 +101,7 @@ export class KafkaService implements OnModuleInit, OnModuleDestroy {
       const msgs = errors
         .map((e) => Object.values(e.constraints ?? {}).join(', '))
         .join('; ');
-      throw new Error(`Validation failed: ${msgs}`);
+      throw new Error(`Invalid message: ${msgs}`);
     }
 
     return instance;

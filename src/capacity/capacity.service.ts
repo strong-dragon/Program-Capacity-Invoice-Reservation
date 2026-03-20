@@ -128,7 +128,6 @@ export class CapacityService {
 
       if (requestedAmount.greaterThan(availableCapacity)) {
         throw new InsufficientCapacityException(
-          programId,
           requestedAmount.toFixed(2),
           availableCapacity.toFixed(2),
           program.currency,
@@ -149,16 +148,16 @@ export class CapacityService {
       } catch (error) {
         if ((error as { code?: string }).code === '23505') {
           this.logger.warn(
-            `Concurrent duplicate for invoice ${invoiceId}, returning existing`,
+            `Duplicate invoice ${invoiceId}, returning existing`,
           );
-          const existingReservation = await reservationRepo.findOne({
+          const existing = await reservationRepo.findOne({
             where: { invoiceId },
           });
-          if (existingReservation) {
+          if (existing) {
             return {
-              reservation: existingReservation,
+              reservation: existing,
               availability: await this.getAvailability(
-                existingReservation.programId,
+                existing.programId,
                 manager,
               ),
             };

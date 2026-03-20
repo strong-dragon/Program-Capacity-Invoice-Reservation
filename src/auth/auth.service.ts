@@ -1,5 +1,4 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { LoginDto } from './dto/login.dto';
@@ -12,48 +11,16 @@ interface User {
 
 @Injectable()
 export class AuthService {
-  private readonly users: User[];
+  private readonly users: User[] = [
+    { id: '1', username: 'admin', password: 'admin' },
+    { id: '2', username: 'user', password: 'user' },
+  ].map((u) => ({
+    id: u.id,
+    username: u.username,
+    passwordHash: bcrypt.hashSync(u.password, 10),
+  }));
 
-  constructor(
-    private readonly jwtService: JwtService,
-    configService: ConfigService,
-  ) {
-    const envUsers = configService.get<string>('auth.users');
-    if (envUsers) {
-      try {
-        const parsed = JSON.parse(envUsers) as Array<{
-          id: string;
-          username: string;
-          passwordHash: string;
-        }>;
-        this.users = parsed.map((u) => {
-          if (!u.id || !u.username || !u.passwordHash) {
-            throw new Error(
-              'Each user must have id, username, and passwordHash',
-            );
-          }
-          return {
-            id: u.id,
-            username: u.username,
-            passwordHash: u.passwordHash,
-          };
-        });
-      } catch (e) {
-        throw new Error(`Invalid AUTH_USERS format: ${(e as Error).message}`);
-      }
-    } else if (configService.get<string>('nodeEnv') !== 'production') {
-      this.users = [
-        { id: '1', username: 'admin', password: 'admin' },
-        { id: '2', username: 'user', password: 'user' },
-      ].map((u) => ({
-        id: u.id,
-        username: u.username,
-        passwordHash: bcrypt.hashSync(u.password, 10),
-      }));
-    } else {
-      throw new Error('AUTH_USERS must be configured in production');
-    }
-  }
+  constructor(private readonly jwtService: JwtService) {}
 
   login(loginDto: LoginDto): { access_token: string } {
     const user = this.users.find((u) => u.username === loginDto.username);

@@ -35,9 +35,7 @@ export class CurrencyService {
     });
     if (reverse) return new Decimal(1).dividedBy(reverse.rate).toFixed(6);
 
-    throw new NotFoundException(
-      `Exchange rate not found: ${fromCurrency} -> ${toCurrency}`,
-    );
+    throw new NotFoundException(`No rate for ${fromCurrency} to ${toCurrency}`);
   }
 
   async seedDefaultRates(): Promise<void> {
