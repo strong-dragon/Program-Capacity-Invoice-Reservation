@@ -1,25 +1,67 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
+import * as bcrypt from 'bcrypt';
 import { LoginDto } from './dto/login.dto';
 
-// Mock users for demo purposes
-// In production, this would be a proper user service with hashed passwords
-const MOCK_USERS = [
-  { id: '1', username: 'admin', password: 'admin' },
-  { id: '2', username: 'user', password: 'user' },
-];
+interface User {
+  id: string;
+  username: string;
+  passwordHash: string;
+}
 
 @Injectable()
 export class AuthService {
-  constructor(private readonly jwtService: JwtService) {}
+  private readonly logger = new Logger(AuthService.name);
+  private readonly users: User[] = [];
+
+  constructor(
+    private readonly jwtService: JwtService,
+    private readonly configService: ConfigService,
+  ) {
+    this.initializeDemoUsers();
+  }
+
+  private initializeDemoUsers(): void {
+    const nodeEnv = this.configService.get<string>('nodeEnv') ?? 'development';
+
+    if (nodeEnv === 'production') {
+      this.logger.warn(
+        'No demo users in production. Configure a proper user store.',
+      );
+      return;
+    }
+
+    const demoUsers = [
+      { id: '1', username: 'admin', password: 'admin' },
+      { id: '2', username: 'user', password: 'user' },
+    ];
+
+    for (const user of demoUsers) {
+      const passwordHash = bcrypt.hashSync(user.password, 10);
+      this.users.push({
+        id: user.id,
+        username: user.username,
+        passwordHash,
+      });
+    }
+
+    this.logger.log('Demo users initialized for development environment');
+  }
 
   login(loginDto: LoginDto): { access_token: string } {
-    const user = MOCK_USERS.find(
-      (u) =>
-        u.username === loginDto.username && u.password === loginDto.password,
-    );
+    const user = this.users.find((u) => u.username === loginDto.username);
 
     if (!user) {
+      throw new UnauthorizedException('Invalid credentials');
+    }
+
+    const isPasswordValid = bcrypt.compareSync(
+      loginDto.password,
+      user.passwordHash,
+    );
+
+    if (!isPasswordValid) {
       throw new UnauthorizedException('Invalid credentials');
     }
 

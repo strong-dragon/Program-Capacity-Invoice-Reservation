@@ -6,6 +6,8 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Kafka, Consumer, EachMessagePayload } from 'kafkajs';
+import { validate } from 'class-validator';
+import { plainToInstance } from 'class-transformer';
 import { CapacityService } from '../capacity/capacity.service';
 import { CapacityUpdateMessage } from './dto/capacity-update.dto';
 import { ReconciliationMessage } from './dto/reconciliation.dto';
@@ -13,7 +15,9 @@ import { ReconciliationMessage } from './dto/reconciliation.dto';
 const TOPICS = {
   CAPACITY_UPDATE: 'capacity.update',
   RECONCILIATION: 'capacity.reconciliation',
-};
+} as const;
+
+const MAX_RETRIES = 3;
 
 @Injectable()
 export class KafkaService implements OnModuleInit, OnModuleDestroy {
@@ -21,6 +25,7 @@ export class KafkaService implements OnModuleInit, OnModuleDestroy {
   private kafka: Kafka;
   private consumer: Consumer;
   private isConnected = false;
+  private retryCount = new Map<string, number>();
 
   constructor(
     private readonly configService: ConfigService,
@@ -93,8 +98,13 @@ export class KafkaService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private getMessageKey(payload: EachMessagePayload): string {
+    return `${payload.topic}-${payload.partition}-${payload.message.offset}`;
+  }
+
   private async handleMessage(payload: EachMessagePayload) {
     const { topic, message } = payload;
+    const messageKey = this.getMessageKey(payload);
 
     if (!message.value) {
       this.logger.warn(`Received empty message on topic ${topic}`);
@@ -102,25 +112,74 @@ export class KafkaService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      const value: unknown = JSON.parse(message.value.toString());
+      const rawValue: unknown = JSON.parse(message.value.toString());
 
       switch (topic) {
         case TOPICS.CAPACITY_UPDATE:
-          await this.handleCapacityUpdate(value as CapacityUpdateMessage);
+          await this.processCapacityUpdate(rawValue);
           break;
         case TOPICS.RECONCILIATION:
-          await this.handleReconciliation(value as ReconciliationMessage);
+          await this.processReconciliation(rawValue);
           break;
         default:
           this.logger.warn(`Unknown topic: ${topic}`);
       }
+
+      // Clear retry count on success
+      this.retryCount.delete(messageKey);
     } catch (error: unknown) {
       const err = error as Error;
-      this.logger.error(
-        `Error processing message from ${topic}: ${err.message}`,
-        err.stack,
-      );
+      const currentRetries = this.retryCount.get(messageKey) ?? 0;
+
+      if (currentRetries < MAX_RETRIES) {
+        this.retryCount.set(messageKey, currentRetries + 1);
+        this.logger.warn(
+          `Retrying message (${currentRetries + 1}/${MAX_RETRIES}): ${err.message}`,
+        );
+        throw error; // Rethrow to trigger Kafka retry
+      } else {
+        // Max retries exceeded - send to DLQ (log for now)
+        this.logger.error(
+          `Message failed after ${MAX_RETRIES} retries, sending to DLQ`,
+          {
+            topic,
+            partition: payload.partition,
+            offset: message.offset,
+            error: err.message,
+          },
+        );
+        // In production: publish to dead-letter topic
+        this.retryCount.delete(messageKey);
+      }
     }
+  }
+
+  private async processCapacityUpdate(rawValue: unknown): Promise<void> {
+    const message = plainToInstance(CapacityUpdateMessage, rawValue);
+    const errors = await validate(message);
+
+    if (errors.length > 0) {
+      const errorMessages = errors
+        .map((e) => Object.values(e.constraints ?? {}).join(', '))
+        .join('; ');
+      throw new Error(`Invalid CapacityUpdateMessage: ${errorMessages}`);
+    }
+
+    await this.handleCapacityUpdate(message);
+  }
+
+  private async processReconciliation(rawValue: unknown): Promise<void> {
+    const message = plainToInstance(ReconciliationMessage, rawValue);
+    const errors = await validate(message);
+
+    if (errors.length > 0) {
+      const errorMessages = errors
+        .map((e) => Object.values(e.constraints ?? {}).join(', '))
+        .join('; ');
+      throw new Error(`Invalid ReconciliationMessage: ${errorMessages}`);
+    }
+
+    await this.handleReconciliation(message);
   }
 
   private async handleCapacityUpdate(message: CapacityUpdateMessage) {

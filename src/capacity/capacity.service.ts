@@ -11,6 +11,7 @@ import { CurrencyService } from '../currency/currency.service';
 import { InsufficientCapacityException } from '../common/exceptions/insufficient-capacity.exception';
 import { ProgramNotFoundException } from '../common/exceptions/program-not-found.exception';
 import { ReservationNotFoundException } from '../common/exceptions/reservation-not-found.exception';
+import { ProgramInactiveException } from '../common/exceptions/program-inactive.exception';
 
 export interface AvailabilityDto {
   programId: string;
@@ -127,6 +128,11 @@ export class CapacityService {
         throw new ProgramNotFoundException(programId);
       }
 
+      // Check if program is active
+      if (!program.isActive) {
+        throw new ProgramInactiveException(programId);
+      }
+
       // Check for existing reservation AFTER acquiring lock (idempotency)
       // Using SELECT FOR UPDATE to prevent concurrent duplicates
       const existing = await reservationRepo
@@ -139,8 +145,9 @@ export class CapacityService {
         this.logger.log(
           `Reservation already exists for invoice ${invoiceId}, returning existing`,
         );
+        // Use existing reservation's programId for correct availability
         const availability = await this.getAvailabilityWithManager(
-          programId,
+          existing.programId,
           manager,
         );
         return { reservation: existing, availability };
@@ -277,52 +284,76 @@ export class CapacityService {
       status: 'active' | 'released';
     }>,
   ): Promise<void> {
-    await this.dataSource.transaction(async (manager) => {
-      const programRepo = manager.getRepository(Program);
-      const reservationRepo = manager.getRepository(Reservation);
+    this.logger.log(
+      `Starting reconciliation for program ${programId} with ${reservations.length} reservations`,
+    );
 
-      const program = await programRepo.findOne({
-        where: { id: programId },
-        lock: { mode: 'pessimistic_write' },
-      });
+    try {
+      await this.dataSource.transaction(async (manager) => {
+        const programRepo = manager.getRepository(Program);
+        const reservationRepo = manager.getRepository(Reservation);
 
-      if (!program) {
-        throw new ProgramNotFoundException(programId);
-      }
-
-      // Update program capacity
-      program.totalCapacity = totalCapacity;
-      await programRepo.save(program);
-
-      // Delete existing reservations for this program
-      await reservationRepo.delete({ programId });
-
-      // Insert new reservations
-      for (const res of reservations) {
-        const amountInProgramCurrency = await this.currencyService.convert(
-          res.amount,
-          res.currency,
-          program.currency,
-        );
-
-        const reservation = reservationRepo.create({
-          invoiceId: res.invoiceId,
-          amount: res.amount,
-          currency: res.currency,
-          amountInProgramCurrency,
-          programId,
-          status:
-            res.status === 'active'
-              ? ReservationStatus.ACTIVE
-              : ReservationStatus.RELEASED,
+        const program = await programRepo.findOne({
+          where: { id: programId },
+          lock: { mode: 'pessimistic_write' },
         });
 
-        await reservationRepo.save(reservation);
-      }
+        if (!program) {
+          throw new ProgramNotFoundException(programId);
+        }
 
-      this.logger.log(
-        `Reconciled program ${programId}: capacity=${totalCapacity}, reservations=${reservations.length}`,
+        // Store old values for logging
+        const oldCapacity = program.totalCapacity;
+
+        // Update program capacity
+        program.totalCapacity = totalCapacity;
+        await programRepo.save(program);
+
+        // Delete existing reservations for this program
+        const deleteResult = await reservationRepo.delete({ programId });
+        this.logger.log(
+          `Deleted ${deleteResult.affected ?? 0} existing reservations for program ${programId}`,
+        );
+
+        // Pre-convert all currencies before inserting to fail early if any conversion fails
+        const convertedReservations = await Promise.all(
+          reservations.map(async (res) => ({
+            ...res,
+            amountInProgramCurrency: await this.currencyService.convert(
+              res.amount,
+              res.currency,
+              program.currency,
+            ),
+          })),
+        );
+
+        // Insert new reservations
+        for (const res of convertedReservations) {
+          const reservation = reservationRepo.create({
+            invoiceId: res.invoiceId,
+            amount: res.amount,
+            currency: res.currency,
+            amountInProgramCurrency: res.amountInProgramCurrency,
+            programId,
+            status:
+              res.status === 'active'
+                ? ReservationStatus.ACTIVE
+                : ReservationStatus.RELEASED,
+          });
+
+          await reservationRepo.save(reservation);
+        }
+
+        this.logger.log(
+          `Reconciliation complete: capacity ${oldCapacity} -> ${totalCapacity}, inserted ${reservations.length} reservations`,
+        );
+      });
+    } catch (error) {
+      this.logger.error(
+        `Reconciliation failed for program ${programId}, transaction rolled back`,
+        error instanceof Error ? error.stack : String(error),
       );
-    });
+      throw error;
+    }
   }
 }

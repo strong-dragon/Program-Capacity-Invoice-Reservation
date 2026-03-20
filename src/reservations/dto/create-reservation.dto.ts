@@ -1,4 +1,5 @@
 import { IsString, IsNotEmpty, IsNumberString, Length } from 'class-validator';
+import { IsPositiveDecimal } from '../../common/validators/positive-decimal.validator';
 
 export class CreateReservationDto {
   @IsString()
@@ -7,6 +8,9 @@ export class CreateReservationDto {
 
   @IsNumberString()
   @IsNotEmpty()
+  @IsPositiveDecimal({
+    message: 'amount must be a positive number greater than zero',
+  })
   amount: string;
 
   @IsString()

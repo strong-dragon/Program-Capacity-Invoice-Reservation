@@ -1,4 +1,5 @@
 import { IsString, IsNotEmpty, Length, IsNumberString } from 'class-validator';
+import { IsPositiveDecimal } from '../../common/validators/positive-decimal.validator';
 
 export class CreateProgramDto {
   @IsString()
@@ -11,5 +12,8 @@ export class CreateProgramDto {
 
   @IsNumberString()
   @IsNotEmpty()
+  @IsPositiveDecimal({
+    message: 'totalCapacity must be a positive number greater than zero',
+  })
   totalCapacity: string;
 }
