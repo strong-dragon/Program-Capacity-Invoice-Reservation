@@ -8,12 +8,14 @@ import {
   UseGuards,
   ParseUUIDPipe,
 } from '@nestjs/common';
+import { ApiBearerAuth } from '@nestjs/swagger';
 import { ReservationsService } from './reservations.service';
 import { CreateReservationDto } from './dto/create-reservation.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 @Controller()
 @UseGuards(JwtAuthGuard)
+@ApiBearerAuth()
 export class ReservationsController {
   constructor(private readonly reservationsService: ReservationsService) {}
 

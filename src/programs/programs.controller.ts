@@ -7,6 +7,7 @@ import {
   UseGuards,
   ParseUUIDPipe,
 } from '@nestjs/common';
+import { ApiBearerAuth } from '@nestjs/swagger';
 import { ProgramsService } from './programs.service';
 import { CapacityService } from '../capacity/capacity.service';
 import { CreateProgramDto } from './dto/create-program.dto';
@@ -14,6 +15,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 @Controller('programs')
 @UseGuards(JwtAuthGuard)
+@ApiBearerAuth()
 export class ProgramsController {
   constructor(
     private readonly programsService: ProgramsService,
