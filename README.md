@@ -210,7 +210,7 @@ src/
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `DB_HOST` | PostgreSQL host | localhost |
-| `DB_PORT` | PostgreSQL port | 5433 |
+| `DB_PORT` | PostgreSQL port | 5432 |
 | `DB_USERNAME` | Database username | capacity |
 | `DB_PASSWORD` | Database password | capacity_secret |
 | `DB_DATABASE` | Database name | capacity_db |
