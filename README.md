@@ -243,11 +243,15 @@ http://localhost:3000/api
 4. Click "Execute"
 5. Copy the `access_token` value from response (only the token itself, without quotes!)
 
+![Login](docs/images/01.jpg)
+
 **Step 2: Authorize**
 1. Click "Authorize" button (top right corner)
 2. Paste the token **WITHOUT QUOTES** (only `eyJhbGci...`, not `"eyJhbGci..."`)
 3. Click "Authorize"
 4. Click "Close"
+
+![Authorize](docs/images/02.jpg)
 
 **Step 3: Create a program**
 1. Open `POST /programs`
@@ -260,6 +264,8 @@ http://localhost:3000/api
 }
 ```
 3. "Execute" → you will get a program with `id`
+
+![Create Program](docs/images/03.jpg)
 
 **Step 4: Create a reservation**
 1. Open `POST /programs/{programId}/reservations`
@@ -274,15 +280,21 @@ http://localhost:3000/api
 ```
 4. "Execute" → you will see `reservedAmount` and `availableAmount`
 
+![Create Reservation](docs/images/04.jpg)
+
 **Step 5: Check availability**
 1. Open `GET /programs/{id}/availability`
 2. Paste the program ID
 3. "Execute" → you will see current capacity state
 
+![Check Availability](docs/images/05.jpg)
+
 **Step 6: Release reservation**
 1. Open `DELETE /reservations/{id}`
 2. Paste the reservation ID
 3. "Execute" → capacity returns to initial value
+
+![Release Reservation](docs/images/06.jpg)
 
 ## Manual Testing (curl)
 
