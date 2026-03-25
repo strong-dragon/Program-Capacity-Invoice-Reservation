@@ -1,237 +1,112 @@
 # Program Capacity & Invoice Reservation Service
 
-A NestJS-based microservice for tracking financing program capacity in real-time. Manages invoice reservations, capacity releases, and integrates with external treasury systems via Kafka.
+## Prerequisites
 
-## Features
+- **Docker Desktop** ([download](https://www.docker.com/products/docker-desktop/))
+- **Node.js 18+** - only for Option B
+  - [Official installer](https://nodejs.org/)
+  - Or via nvm: `nvm install 18`
+  - Or via brew: `brew install node`
 
-- **Capacity Management**: Track available financing capacity across programs
-- **Invoice Reservations**: Reserve capacity when invoices are approved for early payment
-- **Multi-Currency Support**: Handle invoices in different currencies with automatic conversion
-- **Kafka Integration**: Receive capacity updates and reconciliation messages from treasury
-- **JWT Authentication**: All endpoints secured with JWT tokens
-- **Idempotent Operations**: Safe retry handling for reservations
+## Startup
 
-## Tech Stack
+### Option A: Everything in Docker (recommended)
 
-**Runtime:**
-- Node.js 22.22.0
-- npm 10.9.4
+1. Open Docker Desktop (wait until it shows "running")
+2. Run:
+```bash
+make start
+```
 
-**Framework & Core:**
-- NestJS 11.0.1
-- TypeScript 5.7.3
+If `make` is not available:
+```bash
+docker compose up -d --build
+```
 
-**Database:**
-- PostgreSQL 15
-- TypeORM 0.3.28
-
-**Authentication:**
-- @nestjs/jwt 11.0.2
-- Passport + passport-jwt
-- bcrypt 6.0.0
-
-**Messaging:**
-- KafkaJS 2.2.4
-
-**Validation:**
-- class-validator 0.15.1
-- class-transformer 0.5.1
-
-**API Documentation:**
-- @nestjs/swagger 11.2.6
-
-**Utilities:**
-- decimal.js 10.6.0 (financial calculations)
-
-**Testing:**
-- Jest 30.0.0
-- Supertest 7.0.0
-
-## Quick Start
-
-### Prerequisites
-
-- Node.js 18+
-- Docker & Docker Compose
-
-### Setup
+### Option B: App locally + infra in Docker
 
 ```bash
-# Install dependencies
-npm install
+# 1. Open Docker Desktop first! Wait until it shows "running"
 
-# Copy environment file
+# 2. Start infrastructure
+docker compose up -d postgres kafka zookeeper
+
+# 3. Wait for database to be ready
+docker compose ps postgres
+docker compose exec postgres pg_isready -U capacity -d capacity_db
+
+# 4. Install dependencies and start app
 cp .env.example .env
-
-# Start infrastructure (PostgreSQL + Kafka)
-docker compose up -d
-
-# Run in development mode
+npm install
 npm run start:dev
 ```
 
-### Run Tests
+**Important:** Do not run both options at the same time.
+
+## Stop
 
 ```bash
-# Unit tests
-npm test
-
-# E2E tests
-npm run test:e2e
-
-# Coverage
-npm run test:cov
+make stop
 ```
 
-## API Reference
-
-### Authentication
-
+Or:
 ```bash
-# Login (get JWT token)
-curl -X POST http://localhost:3000/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username": "admin", "password": "admin"}'
-
-# Response: {"access_token": "eyJ..."}
+docker compose down
 ```
 
-### Programs
+## Verification
 
+1. Open Swagger UI: **http://localhost:3000/api**
+
+2. Test auth:
+   - Click `POST /auth/login` → "Try it out"
+   - Enter: `{"username": "admin", "password": "admin"}`
+   - Click "Execute"
+   - You should get `200` with `access_token`
+
+## Troubleshooting
+
+### Error: `ECONNREFUSED ...5432`
+
+**Why:** Database is not running.
+
+**Fix:** Restart everything:
 ```bash
-# Create program
-curl -X POST http://localhost:3000/programs \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "Program A", "currency": "USD", "totalCapacity": "10000000"}'
-
-# Get all programs
-curl http://localhost:3000/programs \
-  -H "Authorization: Bearer <token>"
-
-# Get program by ID
-curl http://localhost:3000/programs/:id \
-  -H "Authorization: Bearer <token>"
-
-# Get program availability
-curl http://localhost:3000/programs/:id/availability \
-  -H "Authorization: Bearer <token>"
-# Response: {
-#   "programId": "...",
-#   "currency": "USD",
-#   "totalCapacity": "10000000.00",
-#   "reservedAmount": "500000.00",
-#   "availableAmount": "9500000.00"
-# }
+docker compose down -v
+docker compose up -d
 ```
+Wait 10 seconds, then try again.
 
-### Reservations
+### Error: Port already in use
 
+**Why:** Another process is using the port (5432 for PostgreSQL, 3000 for app, 9092 for Kafka).
+
+**Find what's using the port:**
 ```bash
-# Create reservation
-curl -X POST http://localhost:3000/programs/:programId/reservations \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{"invoiceId": "INV-001", "amount": "50000", "currency": "USD"}'
-
-# Release reservation
-curl -X DELETE http://localhost:3000/reservations/:id \
-  -H "Authorization: Bearer <token>"
-
-# Get reservations for program
-curl http://localhost:3000/programs/:programId/reservations \
-  -H "Authorization: Bearer <token>"
+lsof -i :5432    # PostgreSQL
+lsof -i :3000    # App
+lsof -i :9092    # Kafka
 ```
 
-## Kafka Topics
-
-### capacity.update
-
-Updates program capacity from treasury system.
-
-```json
-{
-  "programId": "uuid",
-  "newTotalCapacity": "15000000",
-  "currency": "USD",
-  "timestamp": "2024-01-15T10:30:00Z"
-}
+**Kill the process:**
+```bash
+kill -9 <PID>
 ```
 
-### capacity.reconciliation
-
-Full state sync from treasury system.
-
-```json
-{
-  "programId": "uuid",
-  "totalCapacity": "10000000",
-  "reservations": [
-    {
-      "invoiceId": "INV-001",
-      "amount": "50000",
-      "currency": "USD",
-      "status": "active"
-    }
-  ],
-  "timestamp": "2024-01-15T10:30:00Z"
-}
+**Or stop local PostgreSQL (if installed via brew):**
+```bash
+brew services stop postgresql
 ```
 
-## Architecture
+### Error: Docker is not running
 
-```
-src/
-├── auth/           # JWT authentication
-├── programs/       # Program CRUD operations
-├── reservations/   # Reservation management
-├── capacity/       # Core capacity logic
-├── currency/       # Currency conversion
-├── kafka/          # Kafka consumers
-└── common/         # Shared utilities
-```
+**Fix:** Open Docker Desktop and wait until it shows "running" (green icon).
 
-## Design Decisions & Trade-offs
+## How to Test (step by step)
 
-1. **PostgreSQL + Pessimistic Locking**: ACID transactions ensure financial data integrity. Pessimistic locking prevents race conditions during concurrent reservations.
+### Step 1: Get token
 
-2. **Decimal.js**: Used for all financial calculations to avoid floating-point precision errors.
-
-3. **Idempotency via invoiceId**: Reservations use `invoiceId` as unique key, allowing safe retries without duplicate charges.
-
-4. **Static Exchange Rates**: Rates stored in DB, seeded on startup. Production should integrate with external FX service.
-
-5. **Graceful Kafka Degradation**: If Kafka is unavailable, the service continues operating with REST API only.
-
-6. **Single Instance Assumption**: No distributed locks. Multi-instance deployment would require Redis-based locking.
-
-## Environment Variables
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `DB_HOST` | PostgreSQL host | localhost |
-| `DB_PORT` | PostgreSQL port | 5432 |
-| `DB_USERNAME` | Database username | capacity |
-| `DB_PASSWORD` | Database password | capacity_secret |
-| `DB_DATABASE` | Database name | capacity_db |
-| `JWT_SECRET` | JWT signing secret | dev-secret |
-| `JWT_EXPIRES_IN` | Token expiry | 1h |
-| `KAFKA_BROKERS` | Kafka broker list | localhost:9092 |
-| `KAFKA_GROUP_ID` | Consumer group ID | capacity-service |
-| `PORT` | Application port | 3000 |
-
-## Swagger UI
-
-After starting the server, open in browser:
-
-```
-http://localhost:3000/api
-```
-
-### How to test via Swagger (step by step)
-
-**Step 1: Get token**
-1. Open `POST /auth/login`
+1. Click on `POST /auth/login`
 2. Click "Try it out"
 3. Enter:
 ```json
@@ -241,21 +116,24 @@ http://localhost:3000/api
 }
 ```
 4. Click "Execute"
-5. Copy the `access_token` value from response (only the token itself, without quotes!)
+5. Copy the token from response (the long text after `"access_token":`)
 
 ![Login](docs/images/01.jpg)
 
-**Step 2: Authorize**
-1. Click "Authorize" button (top right corner)
-2. Paste the token **WITHOUT QUOTES** (only `eyJhbGci...`, not `"eyJhbGci..."`)
+### Step 2: Authorize
+
+1. Click "Authorize" button (top right, with lock icon)
+2. Paste the token **WITHOUT QUOTES** (just `eyJhbGci...`, not `"eyJhbGci..."`)
 3. Click "Authorize"
 4. Click "Close"
 
 ![Authorize](docs/images/02.jpg)
 
-**Step 3: Create a program**
-1. Open `POST /programs`
-2. "Try it out" → enter:
+### Step 3: Create a program
+
+1. Click on `POST /programs`
+2. Click "Try it out"
+3. Enter:
 ```json
 {
   "name": "Test Program",
@@ -263,14 +141,17 @@ http://localhost:3000/api
   "totalCapacity": "5000000"
 }
 ```
-3. "Execute" → you will get a program with `id`
+4. Click "Execute"
+5. Copy the `id` from response
 
 ![Create Program](docs/images/03.jpg)
 
-**Step 4: Create a reservation**
-1. Open `POST /programs/{programId}/reservations`
-2. In the `programId` field paste the program ID
-3. In Request body:
+### Step 4: Create a reservation
+
+1. Click on `POST /programs/{programId}/reservations`
+2. Click "Try it out"
+3. Paste the program `id` in the `programId` field
+4. Enter:
 ```json
 {
   "invoiceId": "INV-100",
@@ -278,67 +159,52 @@ http://localhost:3000/api
   "currency": "USD"
 }
 ```
-4. "Execute" → you will see `reservedAmount` and `availableAmount`
+5. Click "Execute"
+6. See: `reservedAmount: 100000`, `availableAmount: 4900000`
 
 ![Create Reservation](docs/images/04.jpg)
 
-**Step 5: Check availability**
-1. Open `GET /programs/{id}/availability`
-2. Paste the program ID
-3. "Execute" → you will see current capacity state
+### Step 5: Check availability
+
+1. Click on `GET /programs/{id}/availability`
+2. Click "Try it out"
+3. Paste the program `id`
+4. Click "Execute"
+5. See current capacity
 
 ![Check Availability](docs/images/05.jpg)
 
-**Step 6: Release reservation**
-1. Open `DELETE /reservations/{id}`
-2. Paste the reservation ID
-3. "Execute" → capacity returns to initial value
+### Step 6: Release reservation
+
+1. Click on `DELETE /reservations/{id}`
+2. Click "Try it out"
+3. Paste the reservation `id`
+4. Click "Execute"
+5. See: capacity is back to full
 
 ![Release Reservation](docs/images/06.jpg)
 
-## Manual Testing (curl)
+## Project Info
 
-```bash
-# 1. Get JWT token
-curl -X POST http://localhost:3000/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username": "admin", "password": "admin"}'
-# Response: {"access_token":"eyJhbGciOiJIUzI1NiIs..."}
+| Feature | Description |
+|---------|-------------|
+| Capacity tracking | Track credit limits for financing programs |
+| Reservations | Reserve/release capacity for invoices |
+| Multi-currency | Automatic currency conversion |
+| Kafka integration | Receive updates from treasury system |
+| JWT auth | All endpoints secured |
 
-# 2. Create a program with $5M capacity
-curl -X POST http://localhost:3000/programs \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "Test Program", "currency": "USD", "totalCapacity": "5000000"}'
+## Kafka Topics
 
-# 3. Create a reservation for $100,000
-curl -X POST http://localhost:3000/programs/<programId>/reservations \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{"invoiceId": "INV-100", "amount": "100000", "currency": "USD"}'
-# Response: reservedAmount: 100000.00, availableAmount: 4900000.00
+- `capacity.update` - capacity updates from treasury
+- `capacity.reconciliation` - full state sync
 
-# 4. Check availability
-curl http://localhost:3000/programs/<programId>/availability \
-  -H "Authorization: Bearer <token>"
-
-# 5. Release reservation
-curl -X DELETE http://localhost:3000/reservations/<reservationId> \
-  -H "Authorization: Bearer <token>"
-# Response: reservedAmount: 0.00, availableAmount: 5000000.00
-```
-
-## Unit Tests
-
-16 tests covering:
-- **CapacityService**: reservation creation, release, availability calculation, idempotency, insufficient capacity, cross-currency conversion
-- **CurrencyService**: same currency conversion, direct/inverse rate lookup
-- **AuthService**: login validation, JWT token generation
+## Tests
 
 ```bash
 npm test
-# Test Suites: 3 passed, 3 total
-# Tests: 16 passed, 16 total
+# Test Suites: 3 passed
+# Tests: 16 passed
 ```
 
 ## License
